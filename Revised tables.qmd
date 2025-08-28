@@ -1,0 +1,822 @@
+```{r}
+#| label: setup
+#| include: false
+
+# Load required libraries
+library(haven)
+library(dplyr)
+library(tidyr)
+library(survey)
+library(gtsummary)
+library(gt)
+library(knitr)
+
+# Set chunk options
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+#| label: load-data
+#| echo: false
+
+# Load NHAMCS datasets from 2007-2022
+dat07 <- read_sav("ed07-spss.sav", encoding = "UTF-8") %>% mutate(year = 2007)
+dat08 <- read_sav("ed08-spss.sav", encoding = "UTF-8") %>% mutate(year = 2008)
+dat09 <- read_sav("ed09-spss.sav", encoding = "UTF-8") %>% mutate(year = 2009)
+dat2010 <- read_sav("ed2010-spss.sav", encoding = "UTF-8") %>% mutate(year = 2010)
+dat2011 <- read_sav("ed2011-spss.sav", encoding = "UTF-8") %>% mutate(year = 2011)
+dat2012 <- read_dta("ED2012-stata.dta", encoding = "UTF-8") %>% mutate(year = 2012)
+dat2013 <- read_dta("ED2013-stata.dta", encoding = "UTF-8") %>% mutate(year = 2013)
+dat2014 <- read_dta("ED2014-stata.dta", encoding = "UTF-8") %>% mutate(year = 2014)
+dat2015 <- read_dta("ED2015-stata.dta", encoding = "UTF-8") %>% mutate(year = 2015)
+dat2016 <- read_dta("ED2016-stata.dta", encoding = "UTF-8") %>% mutate(year = 2016)
+dat2017 <- read_dta("ED2017-stata.dta", encoding = "UTF-8") %>% mutate(year = 2017)
+dat2018 <- read_dta("ED2018-stata.dta", encoding = "UTF-8") %>% mutate(year = 2018)
+dat2019 <- read_dta("ED2019-stata.dta", encoding = "UTF-8") %>% mutate(year = 2019)
+dat2020 <- read_dta("ED2020-stata.dta", encoding = "UTF-8") %>% mutate(year = 2020)
+dat2021 <- read_dta("ED2021-stata.dta", encoding = "UTF-8") %>% mutate(year = 2021)
+dat2022 <- read_dta("ED2022-stata.dta", encoding = "UTF-8") %>% mutate(year = 2022)
+
+# List of datasets
+dataset_names <- c("dat07", "dat08", "dat09", "dat2010", "dat2011", 
+                   "dat2012", "dat2013", "dat2014", "dat2015", 
+                   "dat2016", "dat2017", "dat2018", "dat2019", 
+                   "dat2020", "dat2021", "dat2022")
+
+# Convert column names to uppercase for consistency
+convert_to_uppercase <- function(data) {
+  colnames(data) <- toupper(colnames(data))
+  return(data)
+}
+
+# Apply to each dataset
+for (dataset_name in dataset_names) {
+  assign(dataset_name, convert_to_uppercase(get(dataset_name)))
+}
+```
+
+```{r}
+#| label: combine-filter-data
+#| echo: false
+
+# Variables needed for analysis
+non_derived_vars <- c("DIAG1", "DIAG2", "DIAG3", "DIAG4", "DIAG5",
+                      "AGE", "SEEN72", "ADMITHOS", "ADMIT", "PATWT",
+                      "CPSUM", "CSTRATM", "HDDIAG1", "RACER", "SEX",
+                      "ETHIM", "RESIDNCE", "IMMEDR", "HDSTAT", "LOS",
+                      "TOTCHRON", "ADISP", "year")
+
+# Process and combine datasets
+years <- 2007:2022
+
+filtered_datasets <- lapply(seq_along(dataset_names), function(i) {
+  get(dataset_names[i]) %>%
+    select(any_of(non_derived_vars)) %>%
+    mutate(year = years[i]) %>%
+    mutate(across(everything(), as.character))
+})
+
+names(filtered_datasets) <- dataset_names
+
+# Combine all datasets
+datcomb <- bind_rows(filtered_datasets, .id = "source") %>%
+  mutate(
+    unique_id = row_number(),
+    PATWT = as.numeric(PATWT)
+  )
+
+# Filter for older adults (≥65) and admitted patients
+# Filter for older adults and create RVA/IVA classification
+# Filter for older adults and create RVA/IVA classification (exact match to original)
+datcomb_oa <- datcomb %>%
+  filter(year >= 2007 & year <= 2022) %>%
+  filter(AGE >= 65) %>%  # No as.numeric conversion
+  mutate(VisitType = ifelse(SEEN72 == 1 & ADMITHOS == 1, "RVA",
+                            ifelse(SEEN72 == 2 & ADMIT == 6, "IVA", NA_character_))) %>%
+  filter(!is.na(VisitType))
+
+# Create derived variables matching Table 1
+datcomb_oa <- datcomb_oa %>%
+  mutate(
+    # Age variables
+    AGE_num = as.numeric(AGE),
+    AgeGroup = case_when(
+      AGE_num >= 65 & AGE_num <= 74 ~ "65-74",
+      AGE_num >= 75 & AGE_num <= 84 ~ "75-84", 
+      AGE_num >= 85 ~ "≥85",
+      TRUE ~ NA_character_
+    ),
+    
+    # Gender
+    Gender = case_when(
+      as.numeric(SEX) == 1 ~ "Male",
+      as.numeric(SEX) == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ),
+    
+    # Race (collapsed per manuscript)
+    Race = case_when(
+      as.numeric(RACER) == 1 ~ "White",
+      as.numeric(RACER) == 2 ~ "Black",
+      as.numeric(RACER) %in% c(3, 4, 5) | is.na(as.numeric(RACER)) ~ "Other / Unknown",
+      TRUE ~ "Other / Unknown"
+    ),
+    
+    # Ethnicity
+    Ethnicity = case_when(
+      as.numeric(ETHIM) == 1 ~ "Hispanic or Latino",
+      as.numeric(ETHIM) == 2 ~ "Not Hispanic or Latino",
+      TRUE ~ NA_character_
+    ),
+    
+    # Residence/Origin
+    Residence = case_when(
+      as.numeric(RESIDNCE) == 1 ~ "Home",
+      as.numeric(RESIDNCE) == 2 ~ "Nursing home",
+      as.numeric(RESIDNCE) %in% c(3, 4) | is.na(as.numeric(RESIDNCE)) ~ "Other / Unknown",
+      TRUE ~ "Other / Unknown"
+    ),
+    
+    # Triage Acuity (ESI collapsed per manuscript)
+    TriageAcuity = case_when(
+      as.numeric(IMMEDR) %in% c(1, 2) ~ "Immediate / Emergent (ESI 1,2)",
+      as.numeric(IMMEDR) == 3 ~ "Urgent (ESI 3)",
+      as.numeric(IMMEDR) %in% c(4, 5) ~ "Semi-urgent / Non-urgent (ESI 4,5)",
+      TRUE ~ NA_character_
+    ),
+    
+    # Chronic conditions
+    TOTCHRON_num = ifelse(as.numeric(TOTCHRON) == -9, NA, as.numeric(TOTCHRON)),
+    
+    # Outcomes
+    HospDead = case_when(
+      as.numeric(HDSTAT) == 2 ~ "Yes",
+      as.numeric(HDSTAT) == 1 ~ "No",
+      TRUE ~ NA_character_
+    ),
+    
+    # Length of stay
+    LOS_num = ifelse(as.numeric(LOS) >= 0, as.numeric(LOS), NA),
+
+    #Admission Location
+    AdLoc = as.factor(ifelse(ADMIT == 5, "Cardiac Catheterization Lab",
+                     ifelse(ADMIT == 3, "Operating Room", 
+                            ifelse(ADMIT == 1, "Critical Care Unit", 
+                                   ifelse(ADMIT == 2, "Stepdown Unit", 
+                                          ifelse(ADMIT == 4 | ADMIT == 6, "Hospital Floor/Ward/Other Bed/Unit", NA)))))),
+    
+    # New transfer to nursing home (among those from home)
+    NewTranNH = case_when(
+      as.numeric(RESIDNCE) == 1 & as.numeric(ADISP) %in% c(2, 3) ~ "Yes",
+      as.numeric(RESIDNCE) == 1 & !as.numeric(ADISP) %in% c(2, 3) ~ "No",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Reorder factor levels for logical presentation
+datcomb_oa <- datcomb_oa %>%
+  mutate(
+    AgeGroup = factor(AgeGroup, levels = c("65-74", "75-84", "≥85")),
+    Gender = factor(Gender, levels = c("Male", "Female")),
+    Race = factor(Race, levels = c("White", "Black", "Other / Unknown")),
+    Ethnicity = factor(Ethnicity, levels = c("Not Hispanic or Latino", "Hispanic or Latino")),
+    TriageAcuity = factor(TriageAcuity, levels = c("Immediate / Emergent (ESI 1,2)", 
+                                                   "Urgent (ESI 3)", 
+                                                   "Semi-urgent / Non-urgent (ESI 4,5)"))
+  )
+
+# Calculate adjusted patient weights (divide by number of years)
+num_years <- length(unique(datcomb_oa$year))
+datcomb_oa <- datcomb_oa %>%
+  mutate(PATWT_adj = PATWT / num_years)
+
+# Save filtered dataset
+saveRDS(datcomb_oa, "datcomb_oa_processed.rds")
+```
+
+```{r}
+#| label: create-survey-design
+#| echo: false
+
+options(survey.lonely.psu = "adjust")
+# Create survey design object
+survey_design <- svydesign(
+  id = ~CPSUM,
+  strata = ~CSTRATM,
+  weight = ~PATWT_adj,
+  data = datcomb_oa,
+  nest = TRUE
+)
+
+# Check sample sizes
+cat("Total weighted sample:", round(sum(weights(survey_design))))
+cat("\nRVA vs IVA breakdown:\n")
+print(svytable(~VisitType, design = survey_design))
+```
+
+```{r}
+#| label: create-table1
+#| echo: false
+
+# Modify the survey design to blank out AdLoc for IVA cases and descending factor order
+survey_design <- survey_design %>%
+  update(
+    AdLoc_display = case_when(
+      VisitType == "IVA" ~ NA_character_,
+      as.numeric(ADMIT) == 5 ~ "Cardiac Catheterization Lab",
+      as.numeric(ADMIT) == 3 ~ "Operating Room", 
+      as.numeric(ADMIT) == 1 ~ "Critical Care Unit",
+      as.numeric(ADMIT) == 2 ~ "Stepdown Unit",
+      as.numeric(ADMIT) %in% c(4, 6) ~ "Hospital Floor/Ward",
+      TRUE ~ NA_character_
+    ),
+    AdLoc_display = factor(AdLoc_display, 
+                          levels = c("Hospital Floor/Ward",     # 68.3%
+                                   "Critical Care Unit",        # 15.5% 
+                                   "Stepdown Unit",            # 12.0%
+                                   "Operating Room",           # 3.5%
+                                   "Cardiac Catheterization Lab")) # 0.7%
+  )
+
+# Create publication-ready Table 1 using gtsummary
+table1 <- survey_design %>%
+  tbl_svysummary(
+    by = VisitType,
+    include = c(AGE_num, AgeGroup, Gender, Race, Ethnicity, Residence, 
+                TOTCHRON_num, TriageAcuity, AdLoc_display, HospDead, LOS_num, NewTranNH),
+    statistic = list(
+      all_continuous() ~ "{median} ({p25}-{p75})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      all_continuous() ~ 0,
+      all_categorical() ~ c(0, 1)
+    ),
+    label = list(
+      AGE_num ~ "Age",
+      AgeGroup ~ "Age group", 
+      Gender ~ "Gender",
+      Race ~ "Race",
+      Ethnicity ~ "Ethnicity",
+      Residence ~ "Residence / Origin of Presentation",
+      TOTCHRON_num ~ "Chronic conditions",
+      TriageAcuity ~ "Triage Acuity Assessment",
+      AdLoc_display ~ "Initial Inpatient Unit Admission Location",
+      HospDead ~ "In-hospital mortality",
+      LOS_num ~ "Length of hospitalization",
+      NewTranNH ~ "New Transfer to Nursing Home"
+    ),
+    missing = "no"
+  ) %>%
+  add_p(test = list(
+    all_continuous() ~ "svy.t.test",
+    all_categorical() ~ "svy.chisq.test"
+  ),
+    include = -AdLoc_display  
+  ) %>%
+  modify_header(
+    list(
+    stat_1 ~ "**IVA**\nN = {style_number(n, digits = 0)}",
+    stat_2 ~ "**RVA**\nN = {style_number(n, digits = 0)}",
+    p.value ~ "**p-value**"
+    )
+  ) %>%
+  modify_caption("Table 1: Characteristics of Weighted National Estimates, 2007-2022, Hospital Admissions in Adults aged ≥65") %>%
+  as_gt() %>%
+  text_replace(
+    locations = cells_body(
+      columns = stat_1,
+      rows = variable == "AdLoc_display"
+    ),
+    pattern = "0 \\(NA%\\)",
+    replacement = ""
+  ) %>%
+  tab_options(
+    table.font.names = "Times New Roman",
+    table.font.size = px(12)
+  )
+
+# Save as HTML
+table1 %>% gtsave("table1_nhamcs.html")
+
+# Display a message
+cat("Table 1 has been saved as 'table1_nhamcs.html' in your working directory.")
+
+# Also display the table
+table1
+```
+
+## Table 2
+```{r}
+#| label: logistic-regression-table2
+#| echo: false
+
+# First, we need to prepare the variables for regression using the same approach as your original
+# Load stringr for string functions
+library(stringr)
+
+# Create survey design with properly coded variables (matching your original methodology)
+survey_design_reg <- survey_design %>%
+  # Convert to factors and create numeric codes as in original
+  update(
+    VisitType_factor = as.factor(VisitType),
+    SEX_factor = as.factor(SEX),
+    RACER_factor = as.factor(RACER),
+    # Create age groups and triage acuity as FACTOR (modified from original)
+    TriAc_factor = factor(
+      ifelse(as.numeric(IMMEDR) %in% c(1, 2), "Immediate_Emergent",
+             ifelse(as.numeric(IMMEDR) == 3, "Urgent", 
+                    ifelse(as.numeric(IMMEDR) %in% c(4, 5), "Semi_Nonurgent", NA))),
+      levels = c("Immediate_Emergent", "Urgent", "Semi_Nonurgent")
+    ),
+    # Convert AGE to numeric and center at 75 years (meaningful for 65+ sample)
+    AGE_centered = as.numeric(AGE) - 75,
+    # Convert TOTCHRON to numeric
+    TOTCHRON_numeric = ifelse(as.numeric(TOTCHRON) == -9, NA, as.numeric(TOTCHRON)),
+    # Create hospital death as numeric (0/1)
+    HospDead_numeric = ifelse(as.numeric(HDSTAT) == 2, 1, 0)
+  )
+
+# Fit the logistic regression model (using TriAc_factor instead of TriAc_numeric)
+logit_model <- svyglm(
+  HospDead_numeric ~ VisitType_factor + SEX_factor + TriAc_factor + RACER_factor + AGE_centered + TOTCHRON_numeric, 
+  design = survey_design_reg, 
+  family = quasibinomial(),
+  control = list(maxit = 100)
+)
+
+# Create publication-ready table using gtsummary
+table2 <- logit_model %>%
+  tbl_regression(
+    label = list(
+      VisitType_factor ~ "Visit Type",
+      SEX_factor ~ "Sex", 
+      TriAc_factor ~ "Triage Acuity",
+      RACER_factor ~ "Race",
+      AGE_centered ~ "Age (per year, centered at 75)",
+      TOTCHRON_numeric ~ "Number of Chronic Conditions"
+    ),
+    # Show odds ratios instead of coefficients
+    exponentiate = TRUE,
+    # Include the intercept
+    intercept = TRUE,
+    # Custom formatting for coefficients and CIs
+    estimate_fun = function(x) style_ratio(x, digits = 2),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  ) %>%
+  # Modify column headers to match reviewer requests
+  modify_header(
+    list(
+      estimate ~ "**aOR**",
+      conf.low ~ "**95% CI**", 
+      p.value ~ "**p-value**"
+    )
+  ) %>%
+  # Add custom row labels for factor levels
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        label = case_when(
+          variable == "VisitType_factor" & row_type == "level" & 
+            reference_row == FALSE ~ "Return Visit Admission",
+          variable == "VisitType_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Index Visit Admission to Floor/Ward",
+          variable == "SEX_factor" & row_type == "level" & 
+            reference_row == FALSE ~ "Female",
+          variable == "SEX_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Male", 
+          variable == "TriAc_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Immediate/Emergent",
+          variable == "TriAc_factor" & row_type == "level" & 
+            str_detect(label, "Urgent") & !str_detect(label, "Semi") ~ "Urgent",
+          variable == "TriAc_factor" & row_type == "level" & 
+            str_detect(label, "Semi_Nonurgent") ~ "Semi-urgent/Nonurgent",
+          variable == "RACER_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "White",
+          variable == "RACER_factor" & row_type == "level" & 
+            str_detect(label, "2") ~ "Black", 
+          variable == "RACER_factor" & row_type == "level" & 
+            !str_detect(label, "2") & reference_row == FALSE ~ "Other",
+          TRUE ~ label
+        )
+      )
+  ) %>%
+  # Add table caption
+  modify_caption("Table 2: Logistic Regression Output Predicting In-hospital Mortality among Hospital Admissions Meeting Criteria, 2007-2022") %>%
+  # Convert to GT for additional formatting
+  as_gt() %>%
+  # Add reference category notes
+  tab_style(
+    style = cell_text(style = "italic"),
+    locations = cells_body(
+      columns = everything(),
+      rows = str_detect(label, "Reference Category")
+    )
+  ) %>%
+  # Professional formatting
+  tab_options(
+    table.font.names = "Times New Roman",
+    table.font.size = px(12),
+    heading.title.font.size = px(14)
+  ) %>%
+  # Add footnote explaining reference categories
+  tab_footnote(
+    footnote = "Reference categories: Index Visit Admission to Floor/Ward, Male, Immediate/Emergent Triage Acuity, White race"
+  )
+
+# Save the table
+table2 %>% gtsave("table2_regression_nhamcs.html")
+
+# Display message and table
+cat("Table 2 has been saved as 'table2_regression_nhamcs.html' in your working directory.")
+
+# Show the table
+table2
+
+# Also display model summary for reference
+cat("\n\nModel Summary for Reference:\n")
+summary(logit_model)
+```
+
+## Table 4
+
+```{r}
+#| label: logistic-regression-table2
+#| echo: false
+
+# First, we need to prepare the variables for regression using the same approach as your original
+# Load stringr for string functions
+library(stringr)
+
+# Create survey design with properly coded variables (matching your original methodology)
+survey_design_reg2 <- survey_design %>%
+  # Exclude year 2020 using subset (proper method for survey objects)
+  subset(year != "2020") %>%
+  # Convert to factors and create numeric codes as in original
+  update(
+    VisitType_factor = as.factor(VisitType),
+    SEX_factor = as.factor(SEX),
+    RACER_factor = as.factor(RACER),
+    # Create age groups and triage acuity as FACTOR (modified from original)
+    TriAc_factor = factor(
+      ifelse(as.numeric(IMMEDR) %in% c(1, 2), "Immediate_Emergent",
+             ifelse(as.numeric(IMMEDR) == 3, "Urgent", 
+                    ifelse(as.numeric(IMMEDR) %in% c(4, 5), "Semi_Nonurgent", NA))),
+      levels = c("Immediate_Emergent", "Urgent", "Semi_Nonurgent")
+    ),
+    # Convert AGE to numeric and center at 75 years (meaningful for 65+ sample)
+    AGE_centered = as.numeric(AGE) - 75,
+    # Convert TOTCHRON to numeric
+    TOTCHRON_numeric = ifelse(as.numeric(TOTCHRON) == -9, NA, as.numeric(TOTCHRON)),
+    # Create hospital death as numeric (0/1)
+    HospDead_numeric = ifelse(as.numeric(HDSTAT) == 2, 1, 0) 
+  )
+
+# Fit the logistic regression model (using TriAc_factor instead of TriAc_numeric)
+logit_model <- svyglm(
+  HospDead_numeric ~ VisitType_factor + SEX_factor + TriAc_factor + RACER_factor + AGE_centered + TOTCHRON_numeric, 
+  design = survey_design_reg2, 
+  family = quasibinomial(),
+  control = list(maxit = 100)
+)
+
+# Create publication-ready table using gtsummary
+table2 <- logit_model %>%
+  tbl_regression(
+    label = list(
+      VisitType_factor ~ "Visit Type",
+      SEX_factor ~ "Sex", 
+      TriAc_factor ~ "Triage Acuity",
+      RACER_factor ~ "Race",
+      AGE_centered ~ "Age (per year, centered at 75)",
+      TOTCHRON_numeric ~ "Number of Chronic Conditions"
+    ),
+    # Show odds ratios instead of coefficients
+    exponentiate = TRUE,
+    # Include the intercept
+    intercept = TRUE,
+    # Custom formatting for coefficients and CIs
+    estimate_fun = function(x) style_ratio(x, digits = 2),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  ) %>%
+  # Modify column headers to match reviewer requests
+  modify_header(
+    list(
+      estimate ~ "**aOR**",
+      conf.low ~ "**95% CI**", 
+      p.value ~ "**p-value**"
+    )
+  ) %>%
+  # Add custom row labels for factor levels
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        label = case_when(
+          variable == "VisitType_factor" & row_type == "level" & 
+            reference_row == FALSE ~ "Return Visit Admission",
+          variable == "VisitType_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Index Visit Admission to Floor/Ward",
+          variable == "SEX_factor" & row_type == "level" & 
+            reference_row == FALSE ~ "Female",
+          variable == "SEX_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Male", 
+          variable == "TriAc_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Immediate/Emergent",
+          variable == "TriAc_factor" & row_type == "level" & 
+            str_detect(label, "Urgent") & !str_detect(label, "Semi") ~ "Urgent",
+          variable == "TriAc_factor" & row_type == "level" & 
+            str_detect(label, "Semi_Nonurgent") ~ "Semi-urgent/Nonurgent",
+          variable == "RACER_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "White",
+          variable == "RACER_factor" & row_type == "level" & 
+            str_detect(label, "2") ~ "Black", 
+          variable == "RACER_factor" & row_type == "level" & 
+            !str_detect(label, "2") & reference_row == FALSE ~ "Other",
+          TRUE ~ label
+        )
+      )
+  ) %>%
+  # Add table caption
+  modify_caption("Table 4: Logistic Regression Output Predicting In-hospital Mortality among Hospital Admissions Meeting Criteria, 2007-2019, 2021-2022") %>%
+  # Convert to GT for additional formatting
+  as_gt() %>%
+  # Add reference category notes
+  tab_style(
+    style = cell_text(style = "italic"),
+    locations = cells_body(
+      columns = everything(),
+      rows = str_detect(label, "Reference Category")
+    )
+  ) %>%
+  # Professional formatting
+  tab_options(
+    table.font.names = "Times New Roman",
+    table.font.size = px(12),
+    heading.title.font.size = px(14)
+  ) %>%
+  # Add footnote explaining reference categories
+  tab_footnote(
+    footnote = "Reference categories: Index Visit Admission to Floor/Ward, Male, Immediate/Emergent Triage Acuity, White race"
+  )
+
+# Save the table
+table2 %>% gtsave("table4_regression_nhamcs.html")
+
+# Display message and table
+cat("Table 4 has been saved as 'table4_regression_nhamcs.html' in your working directory.")
+
+# Show the table
+table2
+
+# Also display model summary for reference
+cat("\n\nModel Summary for Reference:\n")
+summary(logit_model)
+```
+
+## Table 5
+
+```{r}
+#| label: logistic-regression-table2
+#| echo: false
+
+# First, we need to prepare the variables for regression using the same approach as your original
+# Load stringr for string functions
+library(stringr)
+
+# Create survey design with properly coded variables (matching your original methodology)
+survey_design_reg3 <- survey_design %>%
+  # Exclude year 2020 using subset (proper method for survey objects)
+  subset(year == "2020") %>%
+  # Convert to factors and create numeric codes as in original
+  update(
+    VisitType_factor = as.factor(VisitType),
+    SEX_factor = as.factor(SEX),
+    RACER_factor = as.factor(RACER),
+    # Create age groups and triage acuity as FACTOR (modified from original)
+    TriAc_factor = factor(
+      ifelse(as.numeric(IMMEDR) %in% c(1, 2), "Immediate_Emergent",
+             ifelse(as.numeric(IMMEDR) == 3, "Urgent", 
+                    ifelse(as.numeric(IMMEDR) %in% c(4, 5), "Semi_Nonurgent", NA))),
+      levels = c("Immediate_Emergent", "Urgent", "Semi_Nonurgent")
+    ),
+    # Convert AGE to numeric and center at 75 years (meaningful for 65+ sample)
+    AGE_centered = as.numeric(AGE) - 75,
+    # Convert TOTCHRON to numeric
+    TOTCHRON_numeric = ifelse(as.numeric(TOTCHRON) == -9, NA, as.numeric(TOTCHRON)),
+    # Create hospital death as numeric (0/1)
+    HospDead_numeric = ifelse(as.numeric(HDSTAT) == 2, 1, 0) 
+  )
+
+# Fit the logistic regression model (using TriAc_factor instead of TriAc_numeric)
+logit_model <- svyglm(
+  HospDead_numeric ~ VisitType_factor + SEX_factor + TriAc_factor + RACER_factor + AGE_centered + TOTCHRON_numeric, 
+  design = survey_design_reg3, 
+  family = quasibinomial(),
+  control = list(maxit = 100)
+)
+
+# Create publication-ready table using gtsummary
+table2 <- logit_model %>%
+  tbl_regression(
+    label = list(
+      VisitType_factor ~ "Visit Type",
+      SEX_factor ~ "Sex", 
+      TriAc_factor ~ "Triage Acuity",
+      RACER_factor ~ "Race",
+      AGE_centered ~ "Age (per year, centered at 75)",
+      TOTCHRON_numeric ~ "Number of Chronic Conditions"
+    ),
+    # Show odds ratios instead of coefficients
+    exponentiate = TRUE,
+    # Include the intercept
+    intercept = TRUE,
+    # Custom formatting for coefficients and CIs
+    estimate_fun = function(x) style_ratio(x, digits = 2),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  ) %>%
+  # Modify column headers to match reviewer requests
+  modify_header(
+    list(
+      estimate ~ "**aOR**",
+      conf.low ~ "**95% CI**", 
+      p.value ~ "**p-value**"
+    )
+  ) %>%
+  # Add custom row labels for factor levels
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        label = case_when(
+          variable == "VisitType_factor" & row_type == "level" & 
+            reference_row == FALSE ~ "Return Visit Admission",
+          variable == "VisitType_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Index Visit Admission to Floor/Ward",
+          variable == "SEX_factor" & row_type == "level" & 
+            reference_row == FALSE ~ "Female",
+          variable == "SEX_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Male", 
+          variable == "TriAc_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "Immediate/Emergent",
+          variable == "TriAc_factor" & row_type == "level" & 
+            str_detect(label, "Urgent") & !str_detect(label, "Semi") ~ "Urgent",
+          variable == "TriAc_factor" & row_type == "level" & 
+            str_detect(label, "Semi_Nonurgent") ~ "Semi-urgent/Nonurgent",
+          variable == "RACER_factor" & row_type == "level" & 
+            reference_row == TRUE ~ "White",
+          variable == "RACER_factor" & row_type == "level" & 
+            str_detect(label, "2") ~ "Black", 
+          variable == "RACER_factor" & row_type == "level" & 
+            !str_detect(label, "2") & reference_row == FALSE ~ "Other",
+          TRUE ~ label
+        )
+      )
+  ) %>%
+  # Add table caption
+  modify_caption("Table 5: Logistic Regression Output Predicting In-hospital Mortality among Hospital Admissions Meeting Criteria, 2020") %>%
+  # Convert to GT for additional formatting
+  as_gt() %>%
+  # Add reference category notes
+  tab_style(
+    style = cell_text(style = "italic"),
+    locations = cells_body(
+      columns = everything(),
+      rows = str_detect(label, "Reference Category")
+    )
+  ) %>%
+  # Professional formatting
+  tab_options(
+    table.font.names = "Times New Roman",
+    table.font.size = px(12),
+    heading.title.font.size = px(14)
+  ) %>%
+  # Add footnote explaining reference categories
+  tab_footnote(
+    footnote = "Reference categories: Index Visit Admission to Floor/Ward, Male, Immediate/Emergent Triage Acuity, White race"
+  )
+
+# Save the table
+table2 %>% gtsave("table5_regression_nhamcs.html")
+
+# Display message and table
+cat("Table 5 has been saved as 'table5_regression_nhamcs.html' in your working directory.")
+
+# Show the table
+table2
+
+# Also display model summary for reference
+cat("\n\nModel Summary for Reference:\n")
+summary(logit_model)
+```
+
+```{r}
+# Load required libraries
+library(dplyr)
+library(DiagrammeR)
+library(readr)
+library(DiagrammeRsvg) 
+library(rsvg)
+# Track sample sizes at each step
+# Starting sample (already restricted to 2007-2022)
+n1_total <- nrow(datcomb)
+cat("Step 1 - NHAMCS sample 2007-2022:", n1_total, "\n")
+
+# Step 2: Filter age >= 65
+datcomb_age <- datcomb %>%
+  filter(AGE >= 65)
+n2_age <- nrow(datcomb_age)
+n2_excluded <- n1_total - n2_age
+cat("Step 2 - After age filter (≥65):", n2_age, "(excluded:", n2_excluded, ")\n")
+
+# Step 3: Create VisitType variable and see how many have missing data
+datcomb_visittype <- datcomb_age %>%
+  mutate(VisitType = ifelse(SEEN72 == 1 & ADMITHOS == 1, "RVA",
+                            ifelse(SEEN72 == 2 & ADMIT == 6, "IVA", NA_character_)))
+
+# Count different exclusion reasons
+n3_total <- nrow(datcomb_visittype)
+n3_rva <- sum(datcomb_visittype$VisitType == "RVA", na.rm = TRUE)
+n3_iva <- sum(datcomb_visittype$VisitType == "IVA", na.rm = TRUE)
+n3_missing_visittype <- sum(is.na(datcomb_visittype$VisitType))
+
+cat("Step 3 - Visit type classification:\n")
+cat("  - RVA (Return Visit Admissions):", n3_rva, "\n")
+cat("  - IVA (Index Visit Admissions):", n3_iva, "\n")
+cat("  - Missing/excluded visit types:", n3_missing_visittype, "\n")
+
+# Step 4: Final sample after removing missing VisitType
+datcomb_oa <- datcomb_visittype %>%
+  filter(!is.na(VisitType))
+n4_final <- nrow(datcomb_oa)
+
+cat("Step 4 - Final analytical sample:", n4_final, "\n")
+
+# Calculate percentages for final sample
+pct_rva <- round((n3_rva / n4_final) * 100, 1)
+pct_iva <- round((n3_iva / n4_final) * 100, 1)
+
+# Create flow chart using DiagrammeR
+flow_chart <- grViz(paste0("
+digraph flowchart {
+  # Node definitions with styling
+  node [fontname = 'Arial', fontsize = 10, shape = box, style = filled, fillcolor = lightblue]
+  
+  # Define nodes
+  A [label = 'NHAMCS Sample\\n2007-2022\\n(All ages)\\nn = ", format(n1_total, big.mark = ","), "', fillcolor = lightgray]
+  B [label = 'Age ≥ 65 years\\nn = ", format(n2_age, big.mark = ","), "']
+  C [label = 'Hospital admissions with\\n72-hour visit data\\nn = ", format(n4_final, big.mark = ","), "', fillcolor = YellowGreen]
+  
+  # Exclusion boxes
+  E1 [label = 'Excluded\\n(Age < 65)\\nn = ", format(n2_excluded, big.mark = ","), "', shape = ellipse, fillcolor = pink]
+  E2 [label = 'Excluded\\n(No admission or\\nmissing 72h data)\\nn = ", format(n3_missing_visittype, big.mark = ","), "', shape = ellipse, fillcolor = pink]
+  
+  # Final breakdown
+  F1 [label = 'Return Visit\\nAdmissions (RVA)\\nn = ", format(n3_rva, big.mark = ","), " (", pct_rva, "%)', fillcolor = orange]
+  F2 [label = 'Index Visit\\nAdmissions (IVA)\\nn = ", format(n3_iva, big.mark = ","), " (", pct_iva, "%)', fillcolor = orange]
+  
+  # Define edges
+  A -> B
+  A -> E1
+  B -> C
+  B -> E2
+  C -> F1
+  C -> F2
+}
+"))
+
+# Display the flow chart
+flow_chart
+
+# Generate the descriptive text
+cat("\n\n=== DESCRIPTIVE TEXT ===\n")
+cat(paste0("From 2007-2022, the NHAMCS sample included ", 
+           format(n1_total, big.mark = ","), 
+           " ED visits of adults aged 65 years and older. We excluded ", 
+           format(n2_excluded, big.mark = ","), 
+           " visits where patients were aged <65 years and ", 
+           format(n3_missing_visittype, big.mark = ","), 
+           " visits where patients were not admitted to hospital and/or the information of whether the patient was seen within the last 72 hours was unknown. ", 
+           format(n4_final, big.mark = ","), 
+           " ED visits by adults aged ≥65 resulted in hospital admission and had available data on 72-hour return visit history. Among these, ", 
+           format(n3_rva, big.mark = ","), 
+           " (", pct_rva, "%) were classified as RVA, with ED visit within the past 72 hours; ", 
+           format(n3_iva, big.mark = ","), 
+           " (", pct_iva, "%) were admissions without a prior ED visit in the preceding 72 hours (\"index-visit admissions\")."))
+
+# Save summary table
+summary_table <- data.frame(
+  Step = c("NHAMCS sample 2007-2022", 
+           "Age ≥ 65 years", 
+           "Final analytical sample",
+           "  - Return Visit Admissions (RVA)",
+           "  - Index Visit Admissions (IVA)"),
+  N = c(n1_total, n2_age, n4_final, n3_rva, n3_iva),
+  Excluded = c(NA, n2_excluded, n3_missing_visittype, NA, NA),
+  Percentage_of_Final = c(NA, NA, 100, pct_rva, pct_iva)
+)
+
+print(summary_table)
+
+# Save the flow chart
+flow_chart %>%
+  export_png("sample_flow_chart.png")
+```
