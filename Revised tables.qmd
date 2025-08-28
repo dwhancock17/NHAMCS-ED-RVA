@@ -87,12 +87,14 @@ datcomb <- bind_rows(filtered_datasets, .id = "source") %>%
 
 # Filter for older adults (≥65) and admitted patients
 # Filter for older adults and create RVA/IVA classification
-# Filter for older adults and create RVA/IVA classification (exact match to original)
+
 datcomb_oa <- datcomb %>%
-  filter(year >= 2007 & year <= 2022) %>%
-  filter(AGE >= 65) %>%  # No as.numeric conversion
-  mutate(VisitType = ifelse(SEEN72 == 1 & ADMITHOS == 1, "RVA",
-                            ifelse(SEEN72 == 2 & ADMIT == 6, "IVA", NA_character_))) %>%
+  filter(between(as.numeric(year), 2007, 2022)) %>%
+  filter(as.numeric(AGE) >= 65) %>%
+  mutate(
+    VisitType = ifelse(as.numeric(SEEN72) == 1 & as.numeric(ADMITHOS) == 1, "RVA",
+                ifelse(as.numeric(SEEN72) == 2 & as.numeric(ADMIT) == 6, "IVA", NA_character_))
+  ) %>%
   filter(!is.na(VisitType))
 
 # Create derived variables matching Table 1
@@ -201,11 +203,11 @@ saveRDS(datcomb_oa, "datcomb_oa_processed.rds")
 options(survey.lonely.psu = "adjust")
 # Create survey design object
 survey_design <- svydesign(
-  id = ~CPSUM,
-  strata = ~CSTRATM,
-  weight = ~PATWT_adj,
-  data = datcomb_oa,
-  nest = TRUE
+  id     = ~interaction(year, CPSUM,   drop = TRUE),
+  strata = ~interaction(year, CSTRATM, drop = TRUE),
+  weights= ~PATWT_adj,
+  data   = datcomb_oa,
+  nest   = TRUE
 )
 
 # Check sample sizes
@@ -311,18 +313,18 @@ table1
 #| label: logistic-regression-table2
 #| echo: false
 
-# First, we need to prepare the variables for regression using the same approach as your original
+# First, we need to prepare the variables for regression 
 # Load stringr for string functions
 library(stringr)
 
-# Create survey design with properly coded variables (matching your original methodology)
+# Create survey design with properly coded variables 
 survey_design_reg <- survey_design %>%
-  # Convert to factors and create numeric codes as in original
+  # Convert to factors and create numeric codes
   update(
     VisitType_factor = as.factor(VisitType),
     SEX_factor = as.factor(SEX),
     RACER_factor = as.factor(RACER),
-    # Create age groups and triage acuity as FACTOR (modified from original)
+    # Create age groups and triage acuity as FACTOR 
     TriAc_factor = factor(
       ifelse(as.numeric(IMMEDR) %in% c(1, 2), "Immediate_Emergent",
              ifelse(as.numeric(IMMEDR) == 3, "Urgent", 
@@ -444,20 +446,20 @@ summary(logit_model)
 #| label: logistic-regression-table2
 #| echo: false
 
-# First, we need to prepare the variables for regression using the same approach as your original
+# First, we need to prepare the variables for regression 
 # Load stringr for string functions
 library(stringr)
 
-# Create survey design with properly coded variables (matching your original methodology)
+# Create survey design with properly coded variables 
 survey_design_reg2 <- survey_design %>%
-  # Exclude year 2020 using subset (proper method for survey objects)
+  # Exclude year 2020 using subset 
   subset(year != "2020") %>%
-  # Convert to factors and create numeric codes as in original
+  # Convert to factors and create numeric codes 
   update(
     VisitType_factor = as.factor(VisitType),
     SEX_factor = as.factor(SEX),
     RACER_factor = as.factor(RACER),
-    # Create age groups and triage acuity as FACTOR (modified from original)
+    # Create age groups and triage acuity as FACTOR 
     TriAc_factor = factor(
       ifelse(as.numeric(IMMEDR) %in% c(1, 2), "Immediate_Emergent",
              ifelse(as.numeric(IMMEDR) == 3, "Urgent", 
@@ -579,20 +581,20 @@ summary(logit_model)
 #| label: logistic-regression-table2
 #| echo: false
 
-# First, we need to prepare the variables for regression using the same approach as your original
+# First, we need to prepare the variables for regression 
 # Load stringr for string functions
 library(stringr)
 
-# Create survey design with properly coded variables (matching your original methodology)
+# Create survey design with properly coded variables 
 survey_design_reg3 <- survey_design %>%
-  # Exclude year 2020 using subset (proper method for survey objects)
+  # Exclude year 2020 using subset 
   subset(year == "2020") %>%
-  # Convert to factors and create numeric codes as in original
+  # Convert to factors and create numeric codes
   update(
     VisitType_factor = as.factor(VisitType),
     SEX_factor = as.factor(SEX),
     RACER_factor = as.factor(RACER),
-    # Create age groups and triage acuity as FACTOR (modified from original)
+    # Create age groups and triage acuity as FACTOR
     TriAc_factor = factor(
       ifelse(as.numeric(IMMEDR) %in% c(1, 2), "Immediate_Emergent",
              ifelse(as.numeric(IMMEDR) == 3, "Urgent", 
@@ -819,4 +821,8 @@ print(summary_table)
 # Save the flow chart
 flow_chart %>%
   export_png("sample_flow_chart.png")
+```
+
+```{r}
+sessioninfo::session_info()
 ```
